@@ -1,10 +1,17 @@
+from typing import Any, Literal
+
 import numpy as np
 import pandas as pd
+from imblearn.pipeline import Pipeline as ImbPipeline
+from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import KNNImputer, SimpleImputer
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import (
+    FunctionTransformer,
+    OneHotEncoder,
+    StandardScaler,
+)
 
 
 def normalize_strings(df: pd.DataFrame) -> pd.DataFrame:
@@ -33,54 +40,6 @@ def normalize_strings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def median_impute(
-    df: pd.DataFrame,
-    columns: list[str] | None = None
-) -> pd.DataFrame:
-    """
-    Impute missing values using the median.
-    """
-    df = df.copy()
-
-    if columns is None:
-        columns = df.select_dtypes(include=np.number).columns.tolist()
-
-    for col in columns:
-        median_value = df[col].median()
-        df[col] = df[col].fillna(median_value)
-
-    return df
-
-
-def knn_impute(
-    df: pd.DataFrame,
-    columns: list[str] | None = None,
-    n_neighbors: int = 5
-) -> pd.DataFrame:
-    """
-    Impute missing values using KNN.
-    """
-    df = df.copy()
-
-    if columns is None:
-        columns = df.select_dtypes(include=np.number).columns.tolist()
-
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(df[columns])
-
-    imputer = KNNImputer(
-        n_neighbors=n_neighbors,
-        weights="uniform"
-    )
-    filled_scaled = imputer.fit_transform(scaled_data)
-
-    filled_original = scaler.inverse_transform(filled_scaled)
-
-    df[columns] = filled_original
-
-    return df
-
-
 def count_outliers(column: pd.Series) -> int:
     """
     Count the number of outliers in a column using the IQR method.
@@ -94,20 +53,55 @@ def count_outliers(column: pd.Series) -> int:
 
     return (column < lower_bound).sum() + (column > upper_bound).sum()
 
-def build_preprocessor_median(
+
+def build_pipeline(
+    model: BaseEstimator,
     continuous_vars: list[str],
     categorical_vars: list[str],
-    binary_vars: list[str]
-) -> ColumnTransformer:
-    """
-    Build a preprocessor that imputes missing values using the median.
-    """
-    return ColumnTransformer(
+    binary_vars: list[str],
+    imputation_method: Literal["median", "knn"] = "median",
+    apply_log: bool = True,
+    log_variables: list[str] | None = None,
+    sampler: Any | None = None,
+) -> ImbPipeline:
+    if imputation_method == "median":
+        num_steps = [
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    elif imputation_method == "knn":
+        num_steps = [
+            ("scaler", StandardScaler()),
+            ("imputer", KNNImputer(n_neighbors=5, weights="uniform")),
+        ]
+    else:
+        raise ValueError(f"invalid imputation method: {imputation_method}")
+
+    if apply_log:
+        if log_variables is None:
+            log_variables = continuous_vars.copy()
+
+        log_num_pipeline = Pipeline(steps=[
+            ("log1p", FunctionTransformer(np.log1p, validate=False)),
+            *num_steps
+        ])
+
+        std_num_pipeline = Pipeline(steps=num_steps)
+
+        std_variables = [var for var in continuous_vars if var not in log_variables]
+
+        num_transformers = [
+            ("log_num", log_num_pipeline, log_variables),
+            ("std_num", std_num_pipeline, std_variables),
+        ]
+    else:
+        num_transformers = [
+            ("std_num", Pipeline(num_steps), continuous_vars),
+        ]
+
+    preprocessor = ColumnTransformer(
         transformers=[
-            ("num", Pipeline([
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-            ]), continuous_vars),
+            *num_transformers,
             ("cat", OneHotEncoder(
                 drop="first",
                 handle_unknown="ignore",
@@ -118,27 +112,14 @@ def build_preprocessor_median(
         verbose_feature_names_out=False,
     )
 
+    if sampler is not None:
+        return ImbPipeline(steps=[
+            ("preprocessor", preprocessor),
+            ("sampler", sampler),
+            ("model", model)
+        ])
 
-def build_preprocessor_knn(
-    continuous_vars: list[str],
-    categorical_vars: list[str],
-    binary_vars: list[str]
-) -> ColumnTransformer:
-    """
-    Build a preprocessor that imputes missing values using KNN.
-    """
-    return ColumnTransformer(
-        transformers=[
-            ("num", Pipeline([
-                ("imputer", KNNImputer(n_neighbors=5)),
-                ("scaler", StandardScaler()),
-            ]), continuous_vars),
-            ("cat", OneHotEncoder(
-                drop="first",
-                handle_unknown="ignore",
-                sparse_output=False
-            ), categorical_vars),
-            ("bin", "passthrough", binary_vars)
-        ],
-        verbose_feature_names_out=False,
-    )
+    return ImbPipeline(steps=[
+        ("preprocessor", preprocessor),
+        ("model", model)
+    ])
