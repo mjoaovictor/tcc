@@ -40,6 +40,26 @@ def normalize_strings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def clean_stroke_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # drop ID column to prevent accidental usage
+    if "id" in df.columns:
+        df = df.drop(columns=["id"])
+
+    df = normalize_strings(df)
+
+    # remove records with rare gender category
+    if "gender" in df.columns:
+        df = df[df["gender"] != "other"].copy()
+
+    # map binary categorical variables to integers
+    if "ever_married" in df.columns:
+        df["ever_married"] = df["ever_married"].map({"no": 0, "yes": 1})
+
+    return df
+
+
 def count_outliers(column: pd.Series) -> int:
     """
     Count the number of outliers in a column using the IQR method.
@@ -70,6 +90,10 @@ def build_pipeline(
             ("scaler", StandardScaler()),
         ]
     elif imputation_method == "knn":
+        # Since KNNImputer is a distance-based algorithm, it is mandatory to
+        # scale the features (e.g., via StandardScaler) before calculating
+        # neighbors. If we imputed before scaling, features with larger magnitudes
+        # would disproportionately influence the imputation of missing values.
         num_steps = [
             ("scaler", StandardScaler()),
             ("imputer", KNNImputer(n_neighbors=5, weights="uniform")),
@@ -81,8 +105,14 @@ def build_pipeline(
         if log_variables is None:
             log_variables = continuous_vars.copy()
 
+        # Applying log1p before the num_steps (imputation and scaling) is correct.
+        # This ensures that:
+        #   - Skewed distributions are normalized before calculating the median
+        #   or finding KNN neighbors.
+        #   - The StandardScaler operates on the transformed distribution, which
+        #   is often more Gaussian.
         log_num_pipeline = Pipeline(steps=[
-            ("log1p", FunctionTransformer(np.log1p, validate=False)),
+            ("log1p", FunctionTransformer(np.log1p, validate=False, feature_names_out="one-to-one")),
             *num_steps
         ])
 
@@ -103,7 +133,7 @@ def build_pipeline(
         transformers=[
             *num_transformers,
             ("cat", OneHotEncoder(
-                drop="first",
+                drop=None,
                 handle_unknown="ignore",
                 sparse_output=False
             ), categorical_vars),
