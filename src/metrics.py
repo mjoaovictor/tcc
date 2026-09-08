@@ -101,8 +101,8 @@ def evaluate_model_v2(
 
         threshold_data.append({
             "Threshold": t,
-            "Precision": f"{prec:.2%}",
-            "Recall": f"{rec:.2%}",
+            "Precision": f"{prec:.4%}",
+            "Recall": f"{rec:.4%}",
             "F1-Score": f"{f1:.4f}",
             "Falsos Positivos / Positivo Real": f"{ratio_fp_tp:.1f}"
         })
